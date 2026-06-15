@@ -1,0 +1,253 @@
+# When More Data Hurts: Resource Composition Effects in Multilingual Persuasion Technique Detection
+
+
+## Overview
+
+This repository investigates why Polish paragraph-level Macro F1 consistently **exceeds English by 5.67–11.50 pp** across three detection methods, despite English holding 3.1× more native-source training articles (446 vs. 145). We call this the **resource paradox** and systematically rule out the two most natural explanations — architecture and data volume — through controlled ablations, leaving training-data composition as the primary residual candidate.
+
+Three research questions drive the experiments:
+
+- **RQ1**: Can the EN–PL performance gap be explained by architectural choice or raw data volume?
+- **RQ2**: What is the technique-level structural signature of the gap, and is it diagnostically actionable?
+
+The paper makes three contributions:
+
+1. A bi-normalized transport-based confusion matrix (TCM) diagnostic adapted to multilingual multi-label detection, with targeted prompt patches that confirm the confusion taxonomy is cross-lingually shared while its lexical realization is composition-dependent.
+2. Two controlled ablations (architecture configurations; down-aligned data volumes) that eliminate architecture and data quantity as sufficient explanations for the resource paradox.
+3. Language-adaptive calibration guidance for content-moderation deployments.
+
+---
+
+## Repository Structure
+
+```
+.
+├── stage1/
+│   ├── stage1_step1_train_supft.ipynb        # Train Sup-FT (XLM-RoBERTa dual-encoder)
+│   ├── stage1_step2_eval_supft.ipynb         # Evaluate Sup-FT → paragraph-level Macro F1
+│   ├── stage1_step4_nli_baseline.ipynb       # NLI zero-shot baseline (mDeBERTa-v3)
+│   ├── stage1_step5_prompta_iterens.ipynb    # Prompt-A and Iter-Ens (AutoGen, GPT-4o-mini)
+│   └── stage1_step6_confusion_tcm.ipynb      # Bi-normalized TCM diagnosis (Figures 2 & 3 in paper)
+│
+├── hicss_ablations/
+│   ├── hicss_step1_arch_ablation.ipynb       # §5.4 Architecture ablation: Config-1/2/3 (Table 5)
+│   ├── hicss_step2a_down_align_train.ipynb   # §5.5 Volume alignment: train EN(145) × 3 seeds
+│   ├── hicss_step2b_down_align_eval.ipynb    # §5.5 Volume alignment: evaluate → Table 6, p=0.013
+│   ├── hicss_step3a_en_aug_data_prep.ipynb   # §6.1 EN augmentation: build EN 674-article corpus
+│   └── hicss_step3b_en_aug_train.ipynb       # §6.1 EN augmentation: train & reproduce Table 7
+│
+└── README.md
+```
+
+> **Shared notebooks**: `stage1/` notebooks are shared with the companion span-detection repository. The `hicss_ablations/` notebooks are specific to the resource paradox experiments.
+
+---
+
+## Methods
+
+### Stage 1 detection methods
+
+| Method | Description |
+|--------|-------------|
+| **Sup-FT** | XLM-RoBERTa dual-encoder with bidirectional cross-attention over paragraph and per-technique explanations. Dynamic per-technique sigmoid thresholds. Weighted binary cross-entropy loss. |
+| **Prompt-A** | Few-shot multi-agent detection via GPT-4o-mini (AutoGen). One expert agent per technique receives the technique definition, curated keywords, and example sentences extracted from training data. Fixed in the prompt at design time — not retrieval-augmented. |
+| **Iter-Ens** | Runs Prompt-A three times at temperature τ=0.4; predicts a technique if flagged in **at least one** of three rounds (union aggregation, per-round threshold 0.34). |
+| **NLI-ZS** | Zero-shot lower bound. mDeBERTa-v3-base-mnli-xnli as textual entailment. No training data required. |
+
+### Architecture ablation configurations (§5.4)
+
+| Config | Description |
+|--------|-------------|
+| **Config-1** | XLM-RoBERTa trained on translated text only; no label semantics, no dual-encoder. |
+| **Config-2** | Single-encoder: paragraph text concatenated with technique definitions. |
+| **Config-3 (Sup-FT)** | Full dual-encoder with bidirectional cross-attention (main method). |
+
+---
+
+## Data
+
+### Training data composition
+
+| Language | Total | Native SemEval | Machine-translated | SlavicNLP seed | Trans. ratio |
+|----------|:-----:|:--------------:|:-----------------:|:--------------:|:------------:|
+| English  |  446  |   446 (100%)   |         —         |       —        |      0%      |
+| Polish   |  674  |   145  (21%)   |     514  (76%)    |    15  (2%)    |     76%      |
+| Russian  |  684  |   143  (21%)   |     514  (75%)    |    27  (4%)    |     75%      |
+
+Polish and Russian were augmented by machine-translating SemEval articles from French (158), German (132), and Italian (227) using GPT-4o (517 articles, 514 retained after quality filtering). Three source languages rather than back-translation from a single source diversify the stylistic input to the target-language distribution.
+
+Models are trained on the 25-label SlavicNLP 2025 superset for Slavic seed compatibility; all reported metrics are Macro F1 averaged over the **23 CheckThat! 2024 evaluation techniques**.
+
+> **Training data source**: All data originates from official shared task challenges (SemEval 2023 Task 3, CheckThat! 2024 Task 3, SlavicNLP 2025). Data must be requested or downloaded through the respective challenge platforms and is subject to each organizer's terms of use — it is not redistributed here. See [data access](#data-access).
+
+### Evaluation set
+
+The evaluation set is the intersection of the SemEval 2023 Task 3 development split and the CheckThat! 2024 Task 3 annotations. None of these articles appear in any training condition.
+
+| Language | Articles | Gold=0 articles | Paragraphs | Positive rate |
+|----------|:--------:|:---------------:|:----------:|:-------------:|
+| English  |    90    |        3        |   2,532    |     37.4%     |
+| Polish   |    49    |        4        |     730    |     62.1%     |
+| Russian  |    48    |        0        |     475    |     62.1%     |
+
+### Down-alignment ablation data (§5.5)
+
+To isolate data volume from composition effects, we down-align both languages to 145 native-source articles:
+
+- **EN(145)**: three random subsamples (seeds 42 / 123 / 456) from the 446-article English corpus.
+- **PL(145)**: the 145 original SemEval articles only, dropping all translated and seed material.
+
+The joint multilingual model is retrained for each seed, giving three seed-matched pairs for a paired t-test.
+
+### EN augmentation ablation data (§6.1)
+
+To probe the composition hypothesis in the opposite direction, we inject 228 machine-translated articles (FR/DE/IT → EN, QC-filtered from 231) into the English corpus, raising it to 674 articles at a 34% translation ratio — comparable in volume to Polish but far below Polish's 76% translation share.
+
+---
+
+## Results
+
+### Main results — paragraph-level Macro F1 (Table 3)
+
+| Method   |   EN   |   PL   |   RU   |
+|----------|:------:|:------:|:------:|
+| NLI-ZS   |  5.54% | 10.80% | 10.62% |
+| Prompt-A | 38.47% | 49.97% | 35.25% |
+| Sup-FT   | 41.76% | 52.23% | 39.57% |
+| Iter-Ens | 44.88% | 50.55% | 38.77% |
+
+Polish exceeds English by **+11.50 pp** (Prompt-A), **+10.47 pp** (Sup-FT), and **+5.67 pp** (Iter-Ens). The EN–PL gap under Sup-FT does not reach conventional significance (paired t-test p=0.38, 90 EN / 49 PL articles), and is treated throughout as a hypothesis-generating directional observation.
+
+### Architecture ablation — EN–PL gap persists (Table 5, §5.4)
+
+| Config | Description                         |   EN   |   PL   |   RU   | PL−EN  |
+|--------|-------------------------------------|:------:|:------:|:------:|:------:|
+| 1      | Translation-only XLM-R; no label semantics | 19.24% | 32.58% | 17.08% | +13.34 pp |
+| 2      | Single-encoder + definition concat  | 32.07% | 31.82% | 18.08% | −0.25 pp |
+| 3      | Dual-encoder cross-attention (Sup-FT) | 41.76% | 52.23% | 39.57% | +10.47 pp |
+
+The EN–PL ordering is consistent across all simpler architectures. Config-2 momentarily reverses it (single-encoder concatenation favours English's longer contexts), but the full dual-encoder restores and amplifies the PL advantage. **Architecture does not generate the cross-lingual asymmetry.**
+
+### Volume alignment — gap survives equal data (Table 6, §5.5)
+
+| Setting | Articles | Macro F1 |
+|---------|:--------:|:--------:|
+| EN-full (main experiment) |  446  | 41.76% |
+| EN-145 (down-aligned)     |  145  | 10.91% ± 1.11pp |
+| PL-full (main experiment) |  674  | 52.23% |
+| PL-145 (down-aligned)     |  145  | 15.64% ± 1.36pp |
+
+At equal volume and identical architecture, Polish still outperforms English by **+4.72 pp** on average; PL exceeds EN in all three seeds (seed-matched paired t-test: t=8.83, **p=0.013**). **Raw data quantity is not the cause.**
+
+### EN augmentation — more data hurts (Table 7, §6.1)
+
+| Setting | Articles | Trans. ratio | Macro F1 | Micro F1 |
+|---------|:--------:|:------------:|:--------:|:--------:|
+| EN-original | 446 | 0%  | 41.76% | 59.15% |
+| EN-augmented | 674 | 34% | **36.96%** | 47.68% |
+| PL (reference) | 674 | 76% | 52.23% | 66.75% |
+
+Injecting 228 translated articles into English at a 34% translation ratio **drops** Macro F1 by −4.80 pp, with severe over-prediction (e.g. Conversation_Killer precision collapsing to 0.19). Polish at 76% translation shows the opposite pattern. The contrast points to a threshold-like composition effect: a moderate translation admixture amplifies distributional noise without diluting the dominant original-language annotation bias, while a translation-dominated corpus smooths single-source artefacts.
+
+### False-positive concentration (§5.2)
+
+Under Sup-FT, English concentrates 48.7% of all false positives on a single technique (Loaded_Language), versus 31.1% in Polish and 19.5% in Russian — a signature of shortcut learning under annotation-boundary instability.
+
+### Confusion hubs — bi-normalized TCM (Table 4, §5.3)
+
+| Rank | Technique | Confusion pairs | Language |
+|:----:|-----------|:---------------:|----------|
+| 1 | Appeal_to_Time | 16 | PL / RU |
+| 2 | Whataboutism | 11 | EN |
+| 3 | Conversation_Killer | 10 | Mainly EN |
+| 4 | OVC | 8 | EN |
+
+The dominant hub is language-specific: the technique with the sparsest training signal in each language accumulates misattributions from semantically adjacent techniques. Prompt patches derived from the hub list improved EN by +1.22 pp and RU by +0.44 pp, while decreasing PL by −1.96 pp — confirming that the confusion taxonomy is cross-lingually shared but its lexical realization is composition-dependent.
+
+---
+
+## Setup
+
+### Requirements
+
+```bash
+pip install torch transformers pytorch-lightning scikit-learn pandas numpy tqdm boto3 pyautogen openai scipy
+```
+
+Tested with Python 3.10, PyTorch 2.1, Transformers 4.38.
+
+### Configuration
+
+Each notebook contains a **CONFIGURATION cell** near the top (cell 2). Update the paths and credentials before running:
+
+```python
+# Root directory of this repository
+BASE = "your/path/here"
+
+# Training and evaluation data directories
+TRAIN_ARTICLES_DIR = "your/path/here"
+SEMEVAL_DEV_DIR    = "your/path/here"
+CHECKTHAT24_DIR    = "your/path/here"
+
+# S3 credentials (if using remote model storage)
+os.environ.setdefault("AWS_ACCESS_KEY_ID",     "your-access-key-id")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "your-secret-access-key")
+S3_ENDPOINT = "https://your-s3-endpoint"
+S3_BUCKET   = "your-s3-bucket"
+```
+
+For Prompt-A and Iter-Ens, set your OpenAI API key:
+
+```bash
+export OPENAI_API_KEY="your-key-here"
+```
+
+### Data access
+
+All datasets originate from official shared task challenges. Data must be requested or downloaded through the respective challenge platforms and is subject to each organizer's terms of use — it is not redistributed here.
+
+| Resource | Challenge / URL |
+|----------|-----------------|
+| SemEval 2023 Task 3 | https://propaganda.math.unipd.it/semeval2023task3/ |
+| CheckThat! 2024 Task 3 | https://checkthat.gitlab.io/clef2024/task3/ |
+| SlavicNLP 2025 | https://bsnlp.cs.helsinki.fi/slavicnlp2025.html |
+
+---
+
+## Running the Experiments
+
+**Main detection results (Table 3):**
+```
+stage1_step1  →  stage1_step2
+stage1_step4 (NLI baseline, independent)
+stage1_step5 (Prompt-A / Iter-Ens, independent)
+```
+
+**TCM confusion diagnosis (Figures 2 & 3):**
+```
+stage1_step6   ← requires predictions from step2 and step5
+```
+
+**Architecture ablation (Table 5, §5.4):**
+```
+hicss_step1_arch_ablation   ← standalone
+```
+
+**Volume alignment ablation (Table 6, §5.5):**
+```
+hicss_step2a_down_align_train  →  hicss_step2b_down_align_eval
+```
+
+**EN augmentation probe (Table 7, §6.1):**
+```
+hicss_step3a_en_aug_data_prep  →  hicss_step3b_en_aug_train
+```
+Then evaluate using `stage1_step2` with the EN-augmented checkpoint.
+
+---
+
+
+## License
+
+Code released under the [MIT License](LICENSE).  
+Data must be obtained from the original shared task organizers and is subject to their respective terms of use.
